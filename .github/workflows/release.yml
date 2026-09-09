@@ -1,0 +1,71 @@
+# Managed by go-conventions (references/release.md owns the release contract;
+# the workflow hygiene this complies with is github-conventions' references/workflows.md).
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+# Serialized on a constant group and never cancelled mid-run: two tags pushed
+# together would otherwise race to publish the same artifacts.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Forks must not publish under the upstream name.
+    if: github.repository == 'jhoblitt/gnome-monitor-pin'
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # The binary carries no -X ldflags: go build stamps the module version
+      # from the tag. Prove the checkout produces that stamp before releasing.
+      - name: Assert the tag is the version the binary reports
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          go build -o "$RUNNER_TEMP/gnome-monitor-pin" ./cmd/gnome-monitor-pin
+          stamped=$(go version -m "$RUNNER_TEMP/gnome-monitor-pin" | awk '$1 == "mod" { print $3 }')
+          [ "$stamped" = "$TAG" ] || { echo "binary stamped '$stamped', want '$TAG'"; exit 1; }
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: goreleaser
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
