@@ -1,0 +1,20 @@
+# The RPM installs this unit; from a checkout:
+#   cp contrib/gnome-monitor-pin.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+# Then: systemctl --user enable --now gnome-monitor-pin
+[Unit]
+Description=Pin the GNOME monitor layout across hotplugs
+PartOf=graphical-session.target
+After=graphical-session.target
+# The shell's unit sets and unsets this in the user manager's environment.
+ConditionEnvironment=WAYLAND_DISPLAY
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/gnome-monitor-pin watch
+Environment=GNOME_MONITOR_PIN_LOG_FORMAT=text
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

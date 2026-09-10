@@ -1,0 +1,19 @@
+version: 2
+updates:
+  # The Go entry, from go-conventions (references/ci.md, Dependabot), which
+  # owns how it lands in .github/dependabot.yml.
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-dependencies:
+        patterns: ["*"]
+  # The GitHub Actions entry, from github-conventions (references/workflows.md).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
