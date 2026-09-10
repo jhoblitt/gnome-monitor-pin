@@ -9,3 +9,11 @@ updates:
     groups:
       go-dependencies:
         patterns: ["*"]
+  # The GitHub Actions entry, from github-conventions (references/workflows.md).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]
