@@ -11,22 +11,54 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/jhoblitt/gnome-monitor-pin/internal/displayconfig"
+	"github.com/jhoblitt/gnome-monitor-pin/internal/pin"
 	"github.com/jhoblitt/gnome-monitor-pin/internal/version"
 )
 
+//go:generate go tool counterfeiter -generate
+
+// Display is the display connection a command uses. displayconfig.Client
+// is the real one.
+//
+//counterfeiter:generate . Display
+type Display interface {
+	pin.Display
+	Close() error
+}
+
+// Connect opens a Display. Run uses displayconfig.Connect; specs substitute
+// a fake through RunWith.
+type Connect func(ctx context.Context) (Display, error)
+
 // Run executes the command tree against args and returns the first error.
 func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) error {
-	cmd := newRootCmd(stdin, stdout, stderr)
+	return RunWith(ctx, args, stdin, stdout, stderr, connectDisplay)
+}
+
+// RunWith is Run with the display connection supplied by the caller.
+func RunWith(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, connect Connect) error {
+	cmd := newRootCmd(stdin, stdout, stderr, connect)
 	cmd.SetArgs(args)
 	return cmd.ExecuteContext(ctx)
 }
 
-func newRootCmd(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
+func connectDisplay(ctx context.Context) (Display, error) {
+	c, err := displayconfig.Connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func newRootCmd(stdin io.Reader, stdout, stderr io.Writer, connect Connect) *cobra.Command {
 	v := viper.New()
 	cmd := &cobra.Command{
 		Use:           "gnome-monitor-pin",
@@ -37,11 +69,6 @@ func newRootCmd(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			return configure(cmd, v, stderr)
 		},
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			slog.InfoContext(cmd.Context(), "greeting", slog.String("name", v.GetString("name")))
-			fmt.Fprintf(cmd.OutOrStdout(), "hello, %s\n", v.GetString("name"))
-			return nil
-		},
 	}
 	cmd.SetIn(stdin)
 	cmd.SetOut(stdout)
@@ -51,9 +78,31 @@ func newRootCmd(stdin io.Reader, stdout, stderr io.Writer) *cobra.Command {
 	pf.String("config", "", "config file to read after flags and environment")
 	pf.String("log-level", "info", "log level: debug, info, warn, or error (GNOME_MONITOR_PIN_LOG_LEVEL)")
 	pf.String("log-format", "json", "log format: json or text (GNOME_MONITOR_PIN_LOG_FORMAT)")
-	cmd.Flags().String("name", "world", "who to greet (GNOME_MONITOR_PIN_NAME)")
+	pf.String("layout", defaultLayoutPath(), "layout file (GNOME_MONITOR_PIN_LAYOUT)")
 
+	cmd.AddCommand(
+		newShowCmd(connect),
+		newSaveCmd(v, connect),
+		newFixCmd(v, connect),
+		newWatchCmd(v, connect),
+	)
 	return cmd
+}
+
+func defaultLayoutPath() string {
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		return "layout.json"
+	}
+	return filepath.Join(dir, "gnome-monitor-pin", "layout.json")
+}
+
+// closeDisplay closes d at the end of a command; a failure to close has no
+// recovery, so it is logged rather than returned.
+func closeDisplay(ctx context.Context, d Display) {
+	if err := d.Close(); err != nil {
+		slog.WarnContext(ctx, "closing display connection", slog.Any("error", err))
+	}
 }
 
 // configure binds the command's flags and the environment into v, reads the
