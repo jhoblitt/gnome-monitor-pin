@@ -3,6 +3,7 @@ module github.com/jhoblitt/gnome-monitor-pin
 go 1.27
 
 require (
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/onsi/ginkgo/v2 v2.32.1
 	github.com/onsi/gomega v1.43.0
 	github.com/spf13/cobra v1.10.2
