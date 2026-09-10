@@ -69,3 +69,92 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  rpm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: goreleaser
+    # Forks must not publish under the upstream name.
+    if: github.repository == 'jhoblitt/gnome-monitor-pin'
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        fedora: ["43", "44"]
+    container:
+      image: registry.fedoraproject.org/fedora:${{ matrix.fedora }}
+    steps:
+      - name: Install packaging tools
+        run: dnf -y install rpm-build systemd-rpm-macros git-core gh tar
+
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # goreleaser already built and stamped the binary; the RPM ships
+      # exactly the bytes the archive does.
+      - name: Download the release archive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: gh release download "$TAG" --pattern '*_linux_amd64.tar.gz' --output archive.tar.gz
+
+      - name: Build the RPM
+        env:
+          TAG: ${{ github.ref_name }}
+        run: packaging/build-rpm.sh "$TAG" archive.tar.gz out
+
+      - name: Hand the RPM to the check job
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-fc${{ matrix.fedora }}
+          path: out/*.rpm
+          retention-days: 1
+          if-no-files-found: error
+
+  rpm-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: rpm
+    # Forks must not publish under the upstream name.
+    if: github.repository == 'jhoblitt/gnome-monitor-pin'
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        fedora: ["43", "44"]
+    # A container the build never touched: the RPM has to pull its own
+    # dependencies, not inherit rpm-build's, gh's, and tar's closures.
+    container:
+      image: registry.fedoraproject.org/fedora:${{ matrix.fedora }}
+    steps:
+      - name: Download the RPM
+        uses: actions/download-artifact@v4
+        with:
+          name: rpm-fc${{ matrix.fedora }}
+          path: out
+
+      - name: Install the RPM and check the version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          dnf -y install ./out/*.rpm
+          reported=$(gnome-monitor-pin --version)
+          case "$reported" in
+            *"$TAG"*) echo "reports $reported" ;;
+            *) echo "binary reports '$reported', want '$TAG'"; exit 1 ;;
+          esac
+          test -f /usr/lib/systemd/user/gnome-monitor-pin.service
+
+      - name: Upload the RPM to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          dnf -y install gh
+          gh release upload "$TAG" out/*.rpm --clobber

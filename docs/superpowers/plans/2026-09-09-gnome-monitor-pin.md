@@ -4451,7 +4451,7 @@ git commit -m "docs: README and systemd user unit" -m "Co-Authored-By: Claude Fa
 **Files:**
 - Create: `packaging/gnome-monitor-pin.spec`
 - Create: `packaging/build-rpm.sh`
-- Modify: `.github/workflows/release.yml` (append the `rpm` job)
+- Modify: `.github/workflows/release.yml` (append the `rpm` and `rpm-check` jobs)
 
 **Interfaces:**
 - Consumes: the goreleaser job in `release.yml`, which publishes `gnome-monitor-pin_<version>_linux_amd64.tar.gz` (binary, README, LICENSE) to the GitHub release; the unit from Task 10.
@@ -4514,10 +4514,14 @@ install -D -m 0644 %{SOURCE3} %{buildroot}%{_licensedir}/%{name}/LICENSE
 %license %{_licensedir}/%{name}/
 
 %changelog
-%autochangelog
+* Wed Sep 09 2026 Joshua Hoblitt <josh@hoblitt.com> - %{version}-1
+- Built from the release archive.
 ```
 
-If `%autochangelog` is not available in the build image (it needs `rpmautospec`), replace the `%changelog` section with a single entry: `* Tue Sep 09 2026 Joshua Hoblitt <josh@hoblitt.com> - %{version}-1` and `- Built from the release archive.`, and say so in the report.
+The changelog is a static entry, not `%autochangelog`: rpmautospec has no
+changelog file and no dist-git history to read here, so it would stamp every
+released RPM with its `John Doe <packager@example.com> - local build`
+placeholder.
 
 - [ ] **Step 2: Write the build script**
 
@@ -4556,7 +4560,7 @@ ls -1 "$out"
 
 Make it executable: `chmod +x packaging/build-rpm.sh`.
 
-- [ ] **Step 3: Append the rpm job to the release workflow**
+- [ ] **Step 3: Append the rpm jobs to the release workflow**
 
 Append to `.github/workflows/release.yml`, at the same indentation as the `goreleaser` job:
 
@@ -4568,7 +4572,7 @@ Append to `.github/workflows/release.yml`, at the same indentation as the `gorel
     # Forks must not publish under the upstream name.
     if: github.repository == 'jhoblitt/gnome-monitor-pin'
     permissions:
-      contents: write
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -4577,7 +4581,7 @@ Append to `.github/workflows/release.yml`, at the same indentation as the `gorel
       image: registry.fedoraproject.org/fedora:${{ matrix.fedora }}
     steps:
       - name: Install packaging tools
-        run: dnf -y install rpm-build systemd-rpm-macros rpmautospec gh tar
+        run: dnf -y install rpm-build systemd-rpm-macros git-core gh tar
 
       - name: Check out repository
         uses: actions/checkout@v7
@@ -4589,6 +4593,7 @@ Append to `.github/workflows/release.yml`, at the same indentation as the `gorel
       - name: Download the release archive
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: gh release download "$TAG" --pattern '*_linux_amd64.tar.gz' --output archive.tar.gz
 
@@ -4596,6 +4601,37 @@ Append to `.github/workflows/release.yml`, at the same indentation as the `gorel
         env:
           TAG: ${{ github.ref_name }}
         run: packaging/build-rpm.sh "$TAG" archive.tar.gz out
+
+      - name: Hand the RPM to the check job
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-fc${{ matrix.fedora }}
+          path: out/*.rpm
+          retention-days: 1
+          if-no-files-found: error
+
+  rpm-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: rpm
+    # Forks must not publish under the upstream name.
+    if: github.repository == 'jhoblitt/gnome-monitor-pin'
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        fedora: ["43", "44"]
+    # A container the build never touched: the RPM has to pull its own
+    # dependencies, not inherit rpm-build's, gh's, and tar's closures.
+    container:
+      image: registry.fedoraproject.org/fedora:${{ matrix.fedora }}
+    steps:
+      - name: Download the RPM
+        uses: actions/download-artifact@v4
+        with:
+          name: rpm-fc${{ matrix.fedora }}
+          path: out
 
       - name: Install the RPM and check the version
         env:
@@ -4612,11 +4648,23 @@ Append to `.github/workflows/release.yml`, at the same indentation as the `gorel
       - name: Upload the RPM to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
-        run: gh release upload "$TAG" out/*.rpm --clobber
+        run: |
+          dnf -y install gh
+          gh release upload "$TAG" out/*.rpm --clobber
 ```
 
-`actions/checkout` runs without git in the image and falls back to downloading the tree through the API, which is all this job needs. The workflow's `uses:` lines stay unpinned like the rest of the file; the repository-creation hand-off runs `pinact` over every workflow.
+`git-core` is in the tool install so `actions/checkout` produces a real clone;
+without it the action falls back to the REST-API tarball, which has no `.git`,
+and `gh` — which resolves its base repo from `--repo`, then `GH_REPO`, then a
+git remote, and never from `GITHUB_REPOSITORY` — could not determine one. Every
+step that runs `gh` also passes `GH_REPO` for that reason. The install and
+upload run in `rpm-check`, a container the build job never touched, so the RPM
+must pull its own dependencies rather than inherit the build tools' closures;
+`gh` is installed there only after the check has passed.
+
+The workflow's `uses:` lines stay unpinned like the rest of the file; the repository-creation hand-off runs `pinact` over every workflow.
 
 - [ ] **Step 4: Lint the workflow and build one RPM locally when podman is available**
 
@@ -4629,7 +4677,7 @@ Then, unsandboxed and only if `command -v podman` succeeds, build a throwaway ar
 go build -o "$TMPDIR/gnome-monitor-pin" ./cmd/gnome-monitor-pin
 tar -czf "$TMPDIR/archive.tar.gz" -C "$TMPDIR" gnome-monitor-pin -C "$PWD" README.md LICENSE
 podman run --rm -v "$PWD:/src:Z" -v "$TMPDIR:/work:Z" -w /src registry.fedoraproject.org/fedora:43 \
-  sh -c 'dnf -y -q install rpm-build systemd-rpm-macros rpmautospec && packaging/build-rpm.sh v0.0.1 /work/archive.tar.gz /work/out && rpm -qpl /work/out/*.rpm && dnf -y -q install /work/out/*.rpm && gnome-monitor-pin --help'
+  sh -c 'dnf -y -q install rpm-build systemd-rpm-macros && packaging/build-rpm.sh v0.0.1 /work/archive.tar.gz /work/out && rpm -qpl /work/out/*.rpm && dnf -y -q install /work/out/*.rpm && gnome-monitor-pin --help'
 ```
 
 Expected: `gnome-monitor-pin-0.0.1-1.fc43.x86_64.rpm`, the file list showing `/usr/bin/gnome-monitor-pin` and `/usr/lib/systemd/user/gnome-monitor-pin.service`, and the help text. Without podman, this step is verified by the first tagged release instead; say so in the report.
