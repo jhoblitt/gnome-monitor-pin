@@ -1,5 +1,8 @@
 # gnome-monitor-pin
 
+[![ci](https://github.com/jhoblitt/gnome-monitor-pin/actions/workflows/ci.yml/badge.svg)](https://github.com/jhoblitt/gnome-monitor-pin/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/jhoblitt/gnome-monitor-pin/badge)](https://scorecard.dev/viewer/?uri=github.com/jhoblitt/gnome-monitor-pin)
+
 Pin a GNOME multi-monitor layout across monitor hotplugs.
 
 ## Why
@@ -123,3 +126,15 @@ example `GNOME_MONITOR_PIN_LAYOUT` and `GNOME_MONITOR_PIN_LOG_LEVEL`.
 The integration spec talks to the real session bus with a verify-only
 apply: `go test -tags integration ./internal/displayconfig/...` from a
 shell inside a GNOME session.
+
+## Development
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/);
+commitlint enforces this on every pull request. Every GitHub Action is pinned
+to a commit SHA: run `pinact run` after editing a workflow and `actionlint`
+before committing it. Where a `Makefile` is present, `make check` is the local gate,
+`make tools` installs the pinned linter, and that pin lives in the `Makefile`.
+
+## License
+
+[Apache-2.0](LICENSE)
